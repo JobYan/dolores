@@ -1,2 +1,3 @@
 openai>=1.0.0           # OpenAI官方库（需1.0+版本）
 prompt_toolkit>=3.0.43  # 终端输入增强库
+python-dotenv>=1.0.0    # 环境变量加载库
