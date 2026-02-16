@@ -8,6 +8,8 @@ import tempfile
 import asyncio
 import threading
 import select
+import termios
+import tty
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 
@@ -385,13 +387,18 @@ class TTSClient:
                             break
                         play_thread.join(timeout=0.1)
                 else:
-                    while play_thread.is_alive():
-                        if select.select([sys.stdin], [], [], 0.1) == ([sys.stdin], [], []):
-                            sys.stdin.read(1)
-                            self.interrupted = True
-                            print("\n朗读已停止")
-                            break
-            except (ImportError, OSError, KeyboardInterrupt):
+                    old_settings = termios.tcgetattr(sys.stdin)
+                    try:
+                        tty.setcbreak(sys.stdin.fileno())
+                        while play_thread.is_alive():
+                            if select.select([sys.stdin], [], [], 0.1) == ([sys.stdin], [], []):
+                                sys.stdin.read(1)
+                                self.interrupted = True
+                                print("\n朗读已停止")
+                                break
+                    finally:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except (ImportError, OSError, KeyboardInterrupt, termios.error):
                 pass
         
         play_thread.join(timeout=5)
