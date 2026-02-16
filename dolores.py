@@ -523,11 +523,7 @@ class DoloresApp:
                 response_text = msg["content"]
                 if response_text:
                     self.formatter.print_colored(f"🔊 正在朗读...")
-                    success = self.tts_client.speak(response_text)
-                    if success:
-                        self.formatter.print_colored("✓ 朗读完成")
-                    else:
-                        self.formatter.print_colored("✗ 朗读失败")
+                    self.tts_client.speak(response_text)
                 return
 
     def single_query(self, question: str) -> None:
