@@ -360,13 +360,16 @@ class TTSClient:
             是否成功播放完成（如果被中断则返回 False）
         """
         self.interrupted = False
+        audio_process = [None]
         
         def play_audio():
             try:
                 if sys.platform == "win32":
-                    subprocess.run(player.replace('%s', audio_file), shell=True, check=True)
+                    audio_process[0] = subprocess.Popen(player.replace('%s', audio_file), shell=True)
+                    audio_process[0].wait()
                 else:
-                    subprocess.run([player, audio_file], check=True)
+                    audio_process[0] = subprocess.Popen([player, audio_file])
+                    audio_process[0].wait()
             except (subprocess.CalledProcessError, KeyboardInterrupt):
                 pass
         
@@ -384,6 +387,8 @@ class TTSClient:
                         if msvcrt.kbhit():
                             self.interrupted = True
                             print("\n朗读已停止")
+                            if audio_process[0]:
+                                audio_process[0].terminate()
                             break
                         play_thread.join(timeout=0.1)
                 else:
@@ -395,6 +400,8 @@ class TTSClient:
                                 sys.stdin.read(1)
                                 self.interrupted = True
                                 print("\n朗读已停止")
+                                if audio_process[0]:
+                                    audio_process[0].terminate()
                                 break
                     finally:
                         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
