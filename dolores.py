@@ -4,6 +4,8 @@ import os
 import sys
 import argparse
 import subprocess
+import tempfile
+import asyncio
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 
@@ -284,6 +286,67 @@ class InputHandler:
         return None
 
 
+class TTSClient:
+    """文本转语音客户端类，使用 Microsoft Edge TTS"""
+
+    def __init__(self):
+        """初始化 TTS 客户端"""
+        try:
+            import edge_tts
+            self.edge_tts = edge_tts
+            self.available = True
+        except ImportError:
+            self.available = False
+            sys.stderr.write("Warning: edge-tts not installed. TTS functionality will be disabled.\n")
+            sys.stderr.write("Install it with: pip install edge-tts\n")
+
+    def speak(self, text: str) -> bool:
+        """
+        将文本转换为语音并播放
+        
+        Args:
+            text: 要朗读的文本
+            
+        Returns:
+            是否成功播放
+        """
+        if not self.available:
+            sys.stderr.write("TTS is not available. Please install edge-tts.\n")
+            return False
+
+        if not text or not text.strip():
+            return False
+
+        try:
+            communicate = self.edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                temp_path = temp_file.name
+            
+            asyncio.run(communicate.save(temp_path))
+            
+            if sys.platform == "darwin":
+                player = "afplay"
+            elif sys.platform == "linux":
+                player = "aplay"
+            elif sys.platform == "win32":
+                player = "powershell -c (New-Object Media.SoundPlayer '%s').PlaySync();"
+            else:
+                player = None
+
+            if player:
+                subprocess.run([player, temp_path], check=True)
+                os.unlink(temp_path)
+                return True
+            else:
+                sys.stderr.write(f"Unsupported platform: {sys.platform}\n")
+                return False
+
+        except Exception as e:
+            sys.stderr.write(f"TTS Error: {str(e)}\n")
+            return False
+
+
 class DoloresApp:
     """主应用类，整合所有功能模块
     
@@ -307,6 +370,7 @@ class DoloresApp:
         self.llm_client = LLMClient(config)
         self.command_executor = CommandExecutor(self.formatter)
         self.input_handler = InputHandler(self.formatter)
+        self.tts_client = TTSClient()
         self.messages = [{"role": "system", "content": config.system_prompt}]
 
     def reset_conversation(self) -> None:
@@ -320,6 +384,7 @@ class DoloresApp:
         
         支持的输入类型：
         - "clear": 清屏并重置对话历史
+        - "/speak": 朗读上一次的回复
         - 以 "!" 开头: 执行 shell 命令
         - 其他: 发送给 LLM 进行处理
         
@@ -329,6 +394,10 @@ class DoloresApp:
         if user_input.strip().lower() == "clear":
             self.formatter.clear_screen()
             self.reset_conversation()
+            return
+
+        if user_input.strip().lower() == "/speak":
+            self._handle_speak()
             return
 
         if not user_input:
@@ -378,6 +447,20 @@ class DoloresApp:
             sys.stderr.write("获取响应失败，请重试\n")
         print()
 
+    def _handle_speak(self) -> None:
+        """朗读上一次的助手回复"""
+        for msg in reversed(self.messages):
+            if msg["role"] == "assistant":
+                response_text = msg["content"]
+                if response_text:
+                    self.formatter.print_colored(f"🔊 正在朗读...")
+                    success = self.tts_client.speak(response_text)
+                    if success:
+                        self.formatter.print_colored("✓ 朗读完成")
+                    else:
+                        self.formatter.print_colored("✗ 朗读失败")
+                return
+
     def single_query(self, question: str) -> None:
         """
         单次查询模式
@@ -403,6 +486,8 @@ class DoloresApp:
         Args:
             initial_input: 初始输入，如果提供则先处理该输入
         """
+        is_tty = sys.stdin.isatty()
+        
         if initial_input:
             self.messages.append({"role": "user", "content": initial_input})
             self.formatter.print_colored(self.formatter.get_user_prefix() + initial_input)
@@ -411,7 +496,7 @@ class DoloresApp:
             if assistant_response:
                 self.messages.append({"role": "assistant", "content": assistant_response})
 
-        if not sys.stdin.isatty():
+        if not is_tty:
             return
 
         print("进入对话模式（输入 exit 退出）")
@@ -459,7 +544,17 @@ class DoloresApp:
             self.messages[0]["content"] = args.prompt
 
         if in_text:
-            if args.repl:
+            if args.repl and not sys.stdin.isatty():
+                lines = [line.strip() for line in in_text.split('\n') if line.strip()]
+                if lines:
+                    first_line = lines[0]
+                    commands = lines[1:]
+                    
+                    self.interactive_mode(first_line)
+                    
+                    for cmd in commands:
+                        self.process_user_input(cmd)
+            elif args.repl:
                 self.interactive_mode(in_text)
             else:
                 self.single_query(in_text)

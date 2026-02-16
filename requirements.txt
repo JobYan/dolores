@@ -1,3 +1,4 @@
 openai>=1.0.0           # OpenAI官方库（需1.0+版本）
 prompt_toolkit>=3.0.43  # 终端输入增强库
 python-dotenv>=1.0.0    # 环境变量加载库
+edge-tts>=6.1.0         # Microsoft Edge TTS（文本转语音）
