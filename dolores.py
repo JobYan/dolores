@@ -6,6 +6,8 @@ import argparse
 import subprocess
 import tempfile
 import asyncio
+import threading
+import select
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 
@@ -302,13 +304,13 @@ class TTSClient:
 
     def speak(self, text: str) -> bool:
         """
-        将文本转换为语音并播放
+        将文本转换为语音并播放，支持按键中断
         
         Args:
             text: 要朗读的文本
             
         Returns:
-            是否成功播放
+            是否成功播放（如果被中断则返回 False）
         """
         if not self.available:
             sys.stderr.write("TTS is not available. Please install edge-tts.\n")
@@ -335,9 +337,7 @@ class TTSClient:
                 player = None
 
             if player:
-                subprocess.run([player, temp_path], check=True)
-                os.unlink(temp_path)
-                return True
+                return self._play_with_interrupt(player, temp_path)
             else:
                 sys.stderr.write(f"Unsupported platform: {sys.platform}\n")
                 return False
@@ -345,6 +345,61 @@ class TTSClient:
         except Exception as e:
             sys.stderr.write(f"TTS Error: {str(e)}\n")
             return False
+
+    def _play_with_interrupt(self, player: str, audio_file: str) -> bool:
+        """
+        播放音频文件，支持按键中断
+        
+        Args:
+            player: 播放器命令
+            audio_file: 音频文件路径
+            
+        Returns:
+            是否成功播放完成（如果被中断则返回 False）
+        """
+        self.interrupted = False
+        
+        def play_audio():
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(player.replace('%s', audio_file), shell=True, check=True)
+                else:
+                    subprocess.run([player, audio_file], check=True)
+            except (subprocess.CalledProcessError, KeyboardInterrupt):
+                pass
+        
+        play_thread = threading.Thread(target=play_audio)
+        play_thread.daemon = True
+        play_thread.start()
+        
+        print("\n按任意键停止朗读...", end="", flush=True)
+        
+        if sys.stdin.isatty():
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    while play_thread.is_alive():
+                        if msvcrt.kbhit():
+                            self.interrupted = True
+                            print("\n朗读已停止")
+                            break
+                        play_thread.join(timeout=0.1)
+                else:
+                    while play_thread.is_alive():
+                        if select.select([sys.stdin], [], [], 0.1) == ([sys.stdin], [], []):
+                            sys.stdin.read(1)
+                            self.interrupted = True
+                            print("\n朗读已停止")
+                            break
+            except (ImportError, OSError, KeyboardInterrupt):
+                pass
+        
+        play_thread.join(timeout=5)
+        
+        if os.path.exists(audio_file):
+            os.unlink(audio_file)
+        
+        return not self.interrupted
 
 
 class DoloresApp:
