@@ -8,8 +8,6 @@ import tempfile
 import asyncio
 import threading
 import select
-import termios
-import tty
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 
@@ -17,6 +15,18 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.formatted_text import ANSI
 from openai import OpenAI
+
+# 尝试导入 pygame 用于跨平台音频播放
+try:
+    import os
+    os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+    import pygame
+    pygame.mixer.init()
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    sys.stderr.write("Warning: pygame not installed. TTS functionality will be disabled.\n")
+    sys.stderr.write("Install it with: pip install pygame\n")
 
 try:
     from dotenv import load_dotenv
@@ -66,7 +76,7 @@ class Config:
         """
         api_key = os.getenv("DOLORES_API_KEY")
         if not api_key:
-            raise ValueError("API密钥未设置，请设置环境变量 DOLORES_API_KEY 或在 .env 文件中配置")
+            raise ValueError("API 密钥未设置，请设置环境变量 DOLORES_API_KEY 或在 .env 文件中配置")
 
         return cls(
             api_key=api_key,
@@ -291,18 +301,22 @@ class InputHandler:
 
 
 class TTSClient:
-    """文本转语音客户端类，使用 Microsoft Edge TTS"""
+    """文本转语音客户端类，使用 Microsoft Edge TTS 和 pygame 播放"""
 
     def __init__(self):
         """初始化 TTS 客户端"""
         try:
             import edge_tts
             self.edge_tts = edge_tts
-            self.available = True
+            self.edge_available = True
         except ImportError:
-            self.available = False
+            self.edge_available = False
             sys.stderr.write("Warning: edge-tts not installed. TTS functionality will be disabled.\n")
             sys.stderr.write("Install it with: pip install edge-tts\n")
+        
+        self.available = self.edge_available and PYGAME_AVAILABLE
+        if not PYGAME_AVAILABLE:
+            sys.stderr.write("Warning: pygame not available. TTS playback will not work.\n")
 
     def speak(self, text: str) -> bool:
         """
@@ -315,7 +329,7 @@ class TTSClient:
             是否成功播放（如果被中断则返回 False）
         """
         if not self.available:
-            sys.stderr.write("TTS is not available. Please install edge-tts.\n")
+            sys.stderr.write("TTS is not available. Please install edge-tts and pygame.\n")
             return False
 
         if not text or not text.strip():
@@ -329,52 +343,40 @@ class TTSClient:
             
             asyncio.run(communicate.save(temp_path))
             
-            if sys.platform == "darwin":
-                player = "afplay"
-            elif sys.platform == "linux":
-                player = "aplay"
-            elif sys.platform == "win32":
-                player = "powershell -c (New-Object Media.SoundPlayer '%s').PlaySync();"
-            else:
-                player = None
-
-            if player:
-                return self._play_with_interrupt(player, temp_path)
-            else:
-                sys.stderr.write(f"Unsupported platform: {sys.platform}\n")
-                return False
+            # 使用 pygame 统一播放，支持跨平台
+            return self._play_with_pygame(temp_path)
 
         except Exception as e:
             sys.stderr.write(f"TTS Error: {str(e)}\n")
             return False
 
-    def _play_with_interrupt(self, player: str, audio_file: str) -> bool:
+    def _play_with_pygame(self, audio_file: str) -> bool:
         """
-        播放音频文件，支持按键中断
+        使用 pygame 播放音频文件，支持按键中断
         
         Args:
-            player: 播放器命令
             audio_file: 音频文件路径
             
         Returns:
             是否成功播放完成（如果被中断则返回 False）
         """
+        if not PYGAME_AVAILABLE:
+            sys.stderr.write("pygame is not available.\n")
+            return False
+            
         self.interrupted = False
-        audio_process = [None]
         
         def play_audio():
             try:
-                if sys.platform == "win32":
-                    audio_process[0] = subprocess.Popen(player.replace('%s', audio_file), shell=True)
-                    audio_process[0].wait()
-                else:
-                    audio_process[0] = subprocess.Popen([player, audio_file])
-                    audio_process[0].wait()
-            except (subprocess.CalledProcessError, KeyboardInterrupt):
-                pass
+                pygame.mixer.music.load(audio_file)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    pygame.time.Clock().tick(10)
+            except Exception as e:
+                sys.stderr.write(f"Playback error: {str(e)}\n")
         
         play_thread = threading.Thread(target=play_audio)
-        play_thread.daemon = True
+        play_thread.daemon = False
         play_thread.start()
         
         print("\n按任意键停止朗读...", end="", flush=True)
@@ -387,11 +389,16 @@ class TTSClient:
                         if msvcrt.kbhit():
                             self.interrupted = True
                             print("\n朗读已停止")
-                            if audio_process[0]:
-                                audio_process[0].terminate()
+                            pygame.mixer.music.stop()
                             break
                         play_thread.join(timeout=0.1)
+                    # 播放完成后，清除提示信息并换行
+                    if not self.interrupted:
+                        print("\r" + " " * 30 + "\r", end="", flush=True)
+                        print()
                 else:
+                    import termios
+                    import tty
                     old_settings = termios.tcgetattr(sys.stdin)
                     try:
                         tty.setcbreak(sys.stdin.fileno())
@@ -400,15 +407,18 @@ class TTSClient:
                                 sys.stdin.read(1)
                                 self.interrupted = True
                                 print("\n朗读已停止")
-                                if audio_process[0]:
-                                    audio_process[0].terminate()
+                                pygame.mixer.music.stop()
                                 break
                     finally:
                         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-            except (ImportError, OSError, KeyboardInterrupt, termios.error):
+                    # 播放完成后，清除提示信息
+                    if not self.interrupted:
+                        print("\r" + " " * 30 + "\r", end="", flush=True)
+            except (ImportError, OSError, KeyboardInterrupt):
                 pass
         
         play_thread.join(timeout=5)
+        pygame.mixer.music.unload()
         
         if os.path.exists(audio_file):
             os.unlink(audio_file)
@@ -454,8 +464,8 @@ class DoloresApp:
         支持的输入类型：
         - "clear": 清屏并重置对话历史
         - "/speak": 朗读上一次的回复
-        - 以 "!" 开头: 执行 shell 命令
-        - 其他: 发送给 LLM 进行处理
+        - 以 "!" 开头：执行 shell 命令
+        - 其他：发送给 LLM 进行处理
         
         Args:
             user_input: 用户输入的内容
@@ -632,7 +642,7 @@ def main():
     config = Config.from_env()
     app = DoloresApp(config)
 
-    parser = argparse.ArgumentParser(description="AI命令行助手")
+    parser = argparse.ArgumentParser(description="AI 命令行助手")
     parser.add_argument("text", nargs="*", help="输入问题（直接模式）")
     parser.add_argument("-r", "--repl", action="store_true", help="进入交互模式")
     parser.add_argument("-t", "--translate", action="store_true", help="翻译")
