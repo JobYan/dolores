@@ -317,10 +317,16 @@ class TTSClient:
         self.available = self.edge_available and PYGAME_AVAILABLE
         if not PYGAME_AVAILABLE:
             sys.stderr.write("Warning: pygame not available. TTS playback will not work.\n")
+        
+        # 缓存机制：记录上次播放的文本和对应的音频文件
+        self.last_text = None
+        self.last_audio_file = None
 
     def speak(self, text: str) -> bool:
         """
         将文本转换为语音并播放，支持按键中断
+        
+        如果文本与上次相同，则复用缓存的 MP3 文件，避免重新生成。
         
         Args:
             text: 要朗读的文本
@@ -336,12 +342,31 @@ class TTSClient:
             return False
 
         try:
-            communicate = self.edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
-                temp_path = temp_file.name
-            
-            asyncio.run(communicate.save(temp_path))
+            # 检查是否可以使用缓存的音频文件
+            if (self.last_text == text and
+                self.last_audio_file is not None and
+                os.path.exists(self.last_audio_file)):
+                # 文本相同且缓存文件存在，直接使用缓存
+                temp_path = self.last_audio_file
+            else:
+                # 文本不同或缓存文件不存在，生成新的音频文件
+                # 如果存在旧的缓存文件，先删除
+                if self.last_audio_file and os.path.exists(self.last_audio_file):
+                    try:
+                        os.unlink(self.last_audio_file)
+                    except Exception:
+                        pass
+                
+                communicate = self.edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                    temp_path = temp_file.name
+                
+                asyncio.run(communicate.save(temp_path))
+                
+                # 更新缓存
+                self.last_text = text
+                self.last_audio_file = temp_path
             
             # 使用 pygame 统一播放，支持跨平台
             return self._play_with_pygame(temp_path)
@@ -420,7 +445,9 @@ class TTSClient:
         play_thread.join(timeout=5)
         pygame.mixer.music.unload()
         
-        if os.path.exists(audio_file):
+        # 只有当音频文件不是缓存文件时才删除
+        # 缓存文件会在下次生成新音频时删除，或者在程序退出时由系统清理
+        if audio_file != self.last_audio_file and os.path.exists(audio_file):
             os.unlink(audio_file)
         
         return not self.interrupted
