@@ -8,6 +8,7 @@ import tempfile
 import asyncio
 import threading
 import select
+import re
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 
@@ -536,6 +537,41 @@ class DoloresApp:
             "content": f"命令执行结果:\n{cmd_output}",
         })
 
+    def _process_file_references(self, user_input: str) -> str:
+        """
+        处理 @file(xxx) 引用，将文件内容插入到输入中
+        
+        Args:
+            user_input: 用户输入的内容
+            
+        Returns:
+            处理后的内容，包含文件内容
+        """
+        file_pattern = r'@file\(([^)]+)\)'
+        
+        def replace_file_reference(match):
+            filename = match.group(1).strip()
+            file_path = os.path.join(os.getcwd(), filename)
+            
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                return f"[文件不存在: {filename}]"
+            
+            # 检查是否是文件（不是目录）
+            if not os.path.isfile(file_path):
+                return f"[不是文件: {filename}]"
+            
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return f"\n\n--- 文件 {filename} 内容 ---\n{content}\n--- 文件 {filename} 结束 ---\n\n"
+            except UnicodeDecodeError:
+                return f"[无法读取文件（可能是二进制文件）: {filename}]"
+            except Exception as e:
+                return f"[读取文件错误 {filename}: {str(e)}]"
+        
+        return re.sub(file_pattern, replace_file_reference, user_input)
+
     def _handle_llm_query(self, user_input: str) -> None:
         """
         处理 LLM 查询
@@ -543,7 +579,10 @@ class DoloresApp:
         Args:
             user_input: 用户的问题或对话内容
         """
-        self.messages.append({"role": "user", "content": user_input})
+        # 处理 @file(xxx) 引用
+        processed_input = self._process_file_references(user_input)
+        
+        self.messages.append({"role": "user", "content": processed_input})
         self.formatter.print_colored(self.formatter.get_assistant_prefix(), end="")
         assistant_response = self.llm_client.query(self.messages)
 
