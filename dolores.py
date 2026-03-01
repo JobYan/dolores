@@ -580,37 +580,44 @@ class DoloresApp:
         else:
             return (None, 0)
 
-    def _process_file_references(self, user_input: str) -> str:
+    def _process_file_references_with_errors(self, user_input: str) -> tuple:
         """
-        处理 @file(xxx) 引用，将文件内容插入到输入中
-        
+        处理 @file(xxx) 引用，并返回处理后的内容和错误信息
+
         Args:
             user_input: 用户输入的内容
-            
+
         Returns:
-            处理后的内容，包含文件内容
+            (处理后的内容, 错误信息列表) 的元组
         """
+        error_messages = []
         file_pattern = r'@file\(([^)]+)\)'
-        
+
         def replace_file_reference(match):
             filename = match.group(1).strip()
-            
+
             # 查找文件
             result, count = self._find_file_recursive(filename)
-            
+
             if count == 0:
-                return f"[文件不存在: {filename}]"
+                error_msg = f"[文件不存在: {filename}]"
+                error_messages.append(error_msg)
+                return error_msg
             elif count > 1:
                 # 发现多个同名文件，列出所有选项
                 matches_list = "\n".join([f"  {i+1}. {path}" for i, path in enumerate(result)])
-                return f"[发现多个同名文件 '{filename}'，请使用完整相对路径指定：\n{matches_list}\n例如: @file(subdir/{filename})]"
-            
+                error_msg = f"[发现多个同名文件 '{filename}'，请使用完整相对路径指定：\n{matches_list}\n例如: @file(subdir/{filename})]"
+                error_messages.append(error_msg)
+                return error_msg
+
             file_path = result
-            
+
             # 检查是否是文件（不是目录）
             if not os.path.isfile(file_path):
-                return f"[不是文件: {filename}]"
-            
+                error_msg = f"[不是文件: {filename}]"
+                error_messages.append(error_msg)
+                return error_msg
+
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
@@ -618,38 +625,16 @@ class DoloresApp:
                 rel_path = os.path.relpath(file_path, os.getcwd())
                 return f"\n\n--- 文件 {rel_path} 内容 ---\n{content}\n--- 文件 {rel_path} 结束 ---\n\n"
             except UnicodeDecodeError:
-                return f"[无法读取文件（可能是二进制文件）: {filename}]"
+                error_msg = f"[无法读取文件（可能是二进制文件）: {filename}]"
+                error_messages.append(error_msg)
+                return error_msg
             except Exception as e:
-                return f"[读取文件错误 {filename}: {str(e)}]"
-        
-        return re.sub(file_pattern, replace_file_reference, user_input)
+                error_msg = f"[读取文件错误 {filename}: {str(e)}]"
+                error_messages.append(error_msg)
+                return error_msg
 
-    def _extract_file_errors(self, processed_input: str) -> list:
-        """
-        从处理后的输入中提取文件引用错误信息
-
-        Args:
-            processed_input: 处理后的输入内容
-
-        Returns:
-            错误信息列表
-        """
-        error_messages = []
-
-        # 使用正则表达式查找所有错误标记
-        error_patterns = [
-            r'\[文件不存在: [^\]]+\]',
-            r'\[不是文件: [^\]]+\]',
-            r'\[无法读取文件[^\]]*\]',
-            r'\[读取文件错误[^\]]*\]',
-            r'\[发现多个同名文件[^\]]*\]'
-        ]
-
-        for pattern in error_patterns:
-            matches = re.findall(pattern, processed_input)
-            error_messages.extend(matches)
-
-        return error_messages
+        processed = re.sub(file_pattern, replace_file_reference, user_input)
+        return processed, error_messages
 
     def _handle_llm_query(self, user_input: str) -> None:
         """
@@ -658,11 +643,10 @@ class DoloresApp:
         Args:
             user_input: 用户的问题或对话内容
         """
-        # 处理 @file(xxx) 引用
-        processed_input = self._process_file_references(user_input)
+        # 处理 @file(xxx) 引用，并获取错误信息
+        processed_input, error_messages = self._process_file_references_with_errors(user_input)
 
         # 检查是否有文件引用错误
-        error_messages = self._extract_file_errors(processed_input)
         if error_messages:
             for error_msg in error_messages:
                 self.formatter.print_colored(f"❌ {error_msg}")
@@ -695,11 +679,10 @@ class DoloresApp:
         Args:
             question: 要查询的问题
         """
-        # 处理 @file(xxx) 引用
-        processed_question = self._process_file_references(question)
+        # 处理 @file(xxx) 引用，并获取错误信息
+        processed_question, error_messages = self._process_file_references_with_errors(question)
 
         # 检查是否有文件引用错误
-        error_messages = self._extract_file_errors(processed_question)
         if error_messages:
             for error_msg in error_messages:
                 self.formatter.print_colored(f"❌ {error_msg}")
