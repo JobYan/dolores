@@ -624,16 +624,50 @@ class DoloresApp:
         
         return re.sub(file_pattern, replace_file_reference, user_input)
 
+    def _extract_file_errors(self, processed_input: str) -> list:
+        """
+        从处理后的输入中提取文件引用错误信息
+
+        Args:
+            processed_input: 处理后的输入内容
+
+        Returns:
+            错误信息列表
+        """
+        error_messages = []
+
+        # 使用正则表达式查找所有错误标记
+        error_patterns = [
+            r'\[文件不存在: [^\]]+\]',
+            r'\[不是文件: [^\]]+\]',
+            r'\[无法读取文件[^\]]*\]',
+            r'\[读取文件错误[^\]]*\]',
+            r'\[发现多个同名文件[^\]]*\]'
+        ]
+
+        for pattern in error_patterns:
+            matches = re.findall(pattern, processed_input)
+            error_messages.extend(matches)
+
+        return error_messages
+
     def _handle_llm_query(self, user_input: str) -> None:
         """
         处理 LLM 查询
-        
+
         Args:
             user_input: 用户的问题或对话内容
         """
         # 处理 @file(xxx) 引用
         processed_input = self._process_file_references(user_input)
-        
+
+        # 检查是否有文件引用错误
+        error_messages = self._extract_file_errors(processed_input)
+        if error_messages:
+            for error_msg in error_messages:
+                self.formatter.print_colored(f"❌ {error_msg}")
+            return
+
         self.messages.append({"role": "user", "content": processed_input})
         self.formatter.print_colored(self.formatter.get_assistant_prefix(), end="")
         assistant_response = self.llm_client.query(self.messages)
@@ -657,13 +691,23 @@ class DoloresApp:
     def single_query(self, question: str) -> None:
         """
         单次查询模式
-        
+
         Args:
             question: 要查询的问题
         """
+        # 处理 @file(xxx) 引用
+        processed_question = self._process_file_references(question)
+
+        # 检查是否有文件引用错误
+        error_messages = self._extract_file_errors(processed_question)
+        if error_messages:
+            for error_msg in error_messages:
+                self.formatter.print_colored(f"❌ {error_msg}")
+            return
+
         messages = [
             {"role": "system", "content": self.config.system_prompt},
-            {"role": "user", "content": question},
+            {"role": "user", "content": processed_question},
         ]
         self.formatter.print_colored(self.formatter.get_user_prefix() + question)
         self.formatter.print_colored(self.formatter.get_assistant_prefix(), end="")
@@ -675,19 +719,16 @@ class DoloresApp:
     def interactive_mode(self, initial_input: Optional[str] = None) -> None:
         """
         交互式对话模式
-        
+
         Args:
             initial_input: 初始输入，如果提供则先处理该输入
         """
         is_tty = sys.stdin.isatty()
-        
+
         if initial_input:
-            self.messages.append({"role": "user", "content": initial_input})
+            # 使用 process_user_input 处理初始输入，以支持 @file 等功能
             self.formatter.print_colored(self.formatter.get_user_prefix() + initial_input)
-            self.formatter.print_colored(self.formatter.get_assistant_prefix(), end="")
-            assistant_response = self.llm_client.query(self.messages)
-            if assistant_response:
-                self.messages.append({"role": "assistant", "content": assistant_response})
+            self.process_user_input(initial_input)
 
         if not is_tty:
             return
