@@ -537,6 +537,49 @@ class DoloresApp:
             "content": f"命令执行结果:\n{cmd_output}",
         })
 
+    def _find_file_recursive(self, filename: str) -> tuple:
+        """
+        递归查找文件，处理同名文件的情况
+        
+        Args:
+            filename: 文件名或相对路径
+            
+        Returns:
+            (文件路径, 匹配数量) 的元组
+        """
+        # 首先尝试直接路径（支持用户指定相对路径如 subdir/file.txt）
+        direct_path = os.path.join(os.getcwd(), filename)
+        if os.path.exists(direct_path) and os.path.isfile(direct_path):
+            # 如果用户指定了路径分隔符（如 subdir/file.txt），直接返回
+            if os.path.sep in filename or '/' in filename:
+                return (direct_path, 1)
+        
+        # 递归查找所有匹配的文件（只在文件名为纯文件名时）
+        matches = []
+        if os.path.sep not in filename and '/' not in filename:
+            for root, dirs, files in os.walk(os.getcwd()):
+                # 排除常见的非代码目录
+                dirs[:] = [d for d in dirs if d not in ['.git', '__pycache__', 'node_modules', '.venv', 'venv']]
+                
+                if filename in files:
+                    matches.append(os.path.join(root, filename))
+        
+        # 如果直接路径存在且没有其他匹配，返回直接路径
+        if os.path.exists(direct_path) and os.path.isfile(direct_path):
+            if len(matches) <= 1:
+                return (direct_path, 1)
+            else:
+                # 直接路径也是匹配之一，加入列表
+                if direct_path not in matches:
+                    matches.append(direct_path)
+        
+        if len(matches) == 1:
+            return (matches[0], 1)
+        elif len(matches) > 1:
+            return (matches, len(matches))  # 返回所有匹配路径
+        else:
+            return (None, 0)
+
     def _process_file_references(self, user_input: str) -> str:
         """
         处理 @file(xxx) 引用，将文件内容插入到输入中
@@ -551,11 +594,18 @@ class DoloresApp:
         
         def replace_file_reference(match):
             filename = match.group(1).strip()
-            file_path = os.path.join(os.getcwd(), filename)
             
-            # 检查文件是否存在
-            if not os.path.exists(file_path):
+            # 查找文件
+            result, count = self._find_file_recursive(filename)
+            
+            if count == 0:
                 return f"[文件不存在: {filename}]"
+            elif count > 1:
+                # 发现多个同名文件，列出所有选项
+                matches_list = "\n".join([f"  {i+1}. {path}" for i, path in enumerate(result)])
+                return f"[发现多个同名文件 '{filename}'，请使用完整相对路径指定：\n{matches_list}\n例如: @file(subdir/{filename})]"
+            
+            file_path = result
             
             # 检查是否是文件（不是目录）
             if not os.path.isfile(file_path):
@@ -564,7 +614,9 @@ class DoloresApp:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                return f"\n\n--- 文件 {filename} 内容 ---\n{content}\n--- 文件 {filename} 结束 ---\n\n"
+                # 显示找到的文件的相对路径
+                rel_path = os.path.relpath(file_path, os.getcwd())
+                return f"\n\n--- 文件 {rel_path} 内容 ---\n{content}\n--- 文件 {rel_path} 结束 ---\n\n"
             except UnicodeDecodeError:
                 return f"[无法读取文件（可能是二进制文件）: {filename}]"
             except Exception as e:
